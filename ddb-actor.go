@@ -54,7 +54,7 @@ func main() {
 		panic(err)
 	}
 	ddb := NewActorRepositoryDdb("actors", cfg)
-	ddb.scan()
+	ddb.scan2()
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)

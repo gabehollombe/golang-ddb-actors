@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
@@ -34,15 +35,41 @@ func (r *ActorRepositoryInMem) get(id ActorID) Actor {
 	return r.Records[id]
 }
 
+type PartiQLRunner struct {
+	DynamoDbClient *dynamodb.Client
+	TableName      string
+}
+
+func (runner PartiQLRunner) run(query string) ([]map[string]interface{}, error) {
+	var output []map[string]interface{}
+	response, err := runner.DynamoDbClient.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{
+		Statement: aws.String(query),
+	})
+	if err != nil {
+		log.Printf("Error running PartiQL query: %v\n", err)
+	} else {
+		err = attributevalue.UnmarshalListOfMaps(response.Items, &output)
+		if err != nil {
+			log.Printf("Couldn't unmarshal PartiQL response. Here's why: %v\n", err)
+		}
+	}
+	return output, err
+}
+
 type ActorRepositoryDdb struct {
 	TableName      string
 	DynamoDbClient *dynamodb.Client
+	PartiQLRunner  PartiQLRunner
 }
 
 func NewActorRepositoryDdb(tableName string, sdkConfig aws.Config) ActorRepositoryDdb {
 	return ActorRepositoryDdb{
 		TableName:      tableName,
 		DynamoDbClient: dynamodb.NewFromConfig(sdkConfig),
+		PartiQLRunner: PartiQLRunner{
+			DynamoDbClient: dynamodb.NewFromConfig(sdkConfig),
+			TableName:      tableName,
+		},
 	}
 }
 
@@ -59,6 +86,20 @@ func (r *ActorRepositoryDdb) scan() {
 	})
 	if err != nil {
 		log.Printf("Couldn't scan. Here's why: %v\n", err)
+	} else {
+		log.Printf("%v+", res)
+		// err = attributevalue.UnmarshalListOfMaps(res.Items, &movies)
+		// if err != nil {
+		// 	log.Printf("Couldn't unmarshal query response. Here's why: %v\n", err)
+		// }
+	}
+}
+
+func (r *ActorRepositoryDdb) scan2() {
+	log.Println("Pscanning...")
+	res, err := r.PartiQLRunner.run("select * from actors")
+	if err != nil {
+		log.Printf("Couldn't p scan. Here's why: %v\n", err)
 	} else {
 		log.Printf("%v+", res)
 		// err = attributevalue.UnmarshalListOfMaps(res.Items, &movies)
