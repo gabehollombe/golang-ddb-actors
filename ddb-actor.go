@@ -39,8 +39,8 @@ func main() {
 	// Try DDB
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion("us-east-1"),
-		config.WithEndpointResolver(aws.EndpointResolverFunc(
-			func(service, region string) (aws.Endpoint, error) {
+		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 				return aws.Endpoint{URL: "http://localhost:8000"}, nil
 			})),
 		config.WithCredentialsProvider(credentials.StaticCredentialsProvider{
