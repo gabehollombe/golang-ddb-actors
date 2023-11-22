@@ -17,24 +17,24 @@ func main() {
 	}
 
 	// New Actor
-	a := NewActor("a", messageCountFunc, map[string]interface{}{"count": 0})
+	a := NewActor("alex", messageCountFunc, map[string]interface{}{"count": 2})
 
 	// Add actor to repo
-	repo := NewActorRepositoryInMem()
-	repo.save(a)
+	// repo := NewActorRepositoryInMem()
+	// repo.save(a)
 
 	// Send some messages
 	a.addMessage("hello")
 	a.addMessage("goodbye")
-	repo.save(a)
+	// repo.save(a)
 
-	// Ask the actor to do some work
+	// // Ask the actor to do some work
 
-	a.processInbox()
+	// a.processInbox()
 
-	// Persist the new state of the actor along with the handle messages removed (TODO and eventually the OUT messages)
-	a.Inbox = nil
-	repo.save(a)
+	// // Persist the new state of the actor along with the handle messages removed (TODO and eventually the OUT messages)
+	// a.Inbox = nil
+	// repo.save(a)
 
 	// Try DDB
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
@@ -54,7 +54,8 @@ func main() {
 		panic(err)
 	}
 	ddb := NewActorRepositoryDdb("actors", cfg)
-	ddb.scan2()
+	ddb.save(a)
+	// ddb.scan2()
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)

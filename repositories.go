@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"text/template"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 type ActorRepository interface {
@@ -41,9 +46,25 @@ type PartiQLRunner struct {
 }
 
 func (runner PartiQLRunner) run(query string) ([]map[string]interface{}, error) {
+	return runner.runWithParams(query, map[string]interface{}{})
+}
+func (runner PartiQLRunner) runWithParams(query string, params map[string]interface{}) ([]map[string]interface{}, error) {
 	var output []map[string]interface{}
+
+	tmpl, err := template.New("query").Parse(query)
+	if err != nil {
+		panic(err)
+	}
+	buf := &bytes.Buffer{}
+	err = tmpl.Execute(buf, params)
+	if err != nil {
+		panic(err)
+	}
+	templatedQuery := buf.String()
+	fmt.Printf("Running: %+v \n", templatedQuery)
+
 	response, err := runner.DynamoDbClient.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{
-		Statement: aws.String(query),
+		Statement: aws.String(templatedQuery),
 	})
 	if err != nil {
 		log.Printf("Error running PartiQL query: %v\n", err)
@@ -73,8 +94,54 @@ func NewActorRepositoryDdb(tableName string, sdkConfig aws.Config) ActorReposito
 	}
 }
 
-func (r *ActorRepositoryDdb) save(a Actor) {
-	fmt.Printf("Repo saved: %+v \n", a)
+func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
+	state, err := json.Marshal(a.State)
+	if err != nil {
+		return a, err
+	}
+
+	query := `
+		UPDATE 	"actors"
+		SET state='{{.State}}'
+		WHERE pk='{{.ID}}' and sk='{{.ID}}'
+	`
+	params := map[string]interface{}{
+		"State": string(state),
+		"ID":    "actor#" + a.ID,
+	}
+
+	_, err = r.PartiQLRunner.runWithParams(query, params)
+	var ccf *types.ConditionalCheckFailedException
+	if errors.As(err, &ccf) {
+		log.Print("Item doesn't exist yet. Creating...")
+
+		query = `
+			INSERT INTO 	"actors"
+			VALUE { 
+				'pk': '{{.ID}}',
+				'sk': '{{.ID}}',
+				'state': '{{.State}}',
+				'inbox_count': 0
+			}
+		`
+		params = map[string]interface{}{
+			"State": string(state),
+			"ID":    "actor#" + a.ID,
+		}
+		_, err = r.PartiQLRunner.runWithParams(query, params)
+		if err != nil {
+			panic(err)
+		} else {
+			return a, nil
+		}
+	} else {
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	// fmt.Printf("Repo saved: %+v \n", a)
+	return a, nil
 }
 func (r *ActorRepositoryDdb) get(id ActorID) Actor {
 	return Actor{}
@@ -97,7 +164,7 @@ func (r *ActorRepositoryDdb) scan() {
 
 func (r *ActorRepositoryDdb) scan2() {
 	log.Println("Pscanning...")
-	res, err := r.PartiQLRunner.run("select * from actors")
+	res, err := r.PartiQLRunner.run("select * from actors where pk=")
 	if err != nil {
 		log.Printf("Couldn't p scan. Here's why: %v\n", err)
 	} else {
