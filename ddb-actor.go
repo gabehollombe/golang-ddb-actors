@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -54,8 +55,17 @@ func main() {
 		panic(err)
 	}
 	ddb := NewActorRepositoryDdb("actors", cfg)
-	ddb.save(a)
+	_, err = ddb.dsave(a)
+	if err != nil {
+		panic(err)
+	}
 	// ddb.scan2()
+
+	found, err := ddb.dget("alex")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("dfetched actor: %+v\n", found)
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)
