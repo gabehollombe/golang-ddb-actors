@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -183,7 +184,7 @@ func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
 func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool, error) {
 	// We'll use the current time in nanoseconds as the message ID
 	// if this ends up existing, we'll try again until we succeed in the insert
-	messageId := "NANO" //time.Now().UnixNano()
+	messageId := time.Now().UnixNano()
 
 	// Start a transaction
 	txOptions := &dynamodb.TransactWriteItemsInput{
@@ -191,35 +192,55 @@ func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool,
 			{
 				Put: &types.Put{
 					Item: map[string]types.AttributeValue{
-						"PK":      &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
-						"SK":      &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+						"pk":      &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"sk":      &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
 						"message": &types.AttributeValueMemberS{Value: message},
 					},
-					TableName: aws.String(r.TableName),
+					ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
+					TableName:           aws.String(r.TableName),
 				},
 			},
 			{
 				Update: &types.Update{
 					TableName: aws.String(r.TableName),
 					Key: map[string]types.AttributeValue{
-						"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
-						"SK": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
 					},
-					UpdateExpression: aws.String("ADD InboxCount = InboxCount + :val"),
+					UpdateExpression: aws.String("ADD inbox_count :inc"),
 					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":val": &types.AttributeValueMemberN{Value: "-1"},
+						":inc": &types.AttributeValueMemberN{Value: "1"},
 					},
 				},
 			},
 		},
 	}
 
-	_, err := r.DynamoDbClient.TransactWriteItems(context.TODO(), txOptions)
-	if err != nil {
-		return false, err
+	// Retry if we get a TransactionCanceledException
+	// Only retry up to 3 times
+	maxRetries := 3
+	retryCount := 0
+	for retryCount < maxRetries {
+		_, err := r.DynamoDbClient.TransactWriteItems(context.TODO(), txOptions)
+		if err == nil {
+			return true, nil
+		}
+
+		if err != nil {
+			var tce *types.TransactionCanceledException
+
+			// If it's not a TCE, we don't know what to do with it.
+			if !errors.As(err, &tce) {
+				return false, err
+			}
+
+			// It's a TCE. Let's retry...
+			log.Printf("Transaction canceled. Retrying...")
+			retryCount++
+		}
 	}
 
-	return true, nil
+	return false, errors.New("max retries exceeded")
 }
 
 func (r *ActorRepositoryDdb) getLastMessageID(id ActorID) (int, error) {

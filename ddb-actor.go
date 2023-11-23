@@ -56,11 +56,22 @@ func main() {
 	}
 
 	// Get after save to see that save is working
-	found, err := ddb.get("a")
+	a, err = ddb.get("a")
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("fetched actor: %+v\n", found)
+	fmt.Printf("fetched actor: %+v\n", a)
+
+	ok, err := ddb.addMessage(a.ID, "hello")
+	if !ok {
+		panic(err)
+	}
+
+	a, err = ddb.get("a")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("fetched actor: %+v\n", a)
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)
