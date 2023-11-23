@@ -17,27 +17,7 @@ func main() {
 		return []Message{}
 	}
 
-	// New Actor
-	a := NewActor("alex", messageCountFunc, map[string]interface{}{"count": 2})
-
-	// Add actor to repo
-	// repo := NewActorRepositoryInMem()
-	// repo.save(a)
-
-	// Send some messages
-	a.addMessage("hello")
-	a.addMessage("goodbye")
-	// repo.save(a)
-
-	// // Ask the actor to do some work
-
-	// a.processInbox()
-
-	// // Persist the new state of the actor along with the handle messages removed (TODO and eventually the OUT messages)
-	// a.Inbox = nil
-	// repo.save(a)
-
-	// Try DDB
+	// Init local DDB config
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion("us-east-1"),
 		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
@@ -54,18 +34,33 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	ddb := NewActorRepositoryDdb("actors", cfg)
-	_, err = ddb.dsave(a)
-	if err != nil {
-		panic(err)
-	}
-	// ddb.scan2()
 
-	found, err := ddb.dget("alex")
+	// Set up DDB repo
+	ddb := NewActorRepositoryDdb("actors", cfg)
+
+	// New Actor
+	actorName := "bob6"
+	a := NewActor(actorName, messageCountFunc, map[string]interface{}{"count": 2})
+
+	// Poke the Actor a bit...
+	// Send some messages
+	a.addMessage("hello")
+	a.addMessage("goodbye")
+	// // Ask the actor to do some work
+	// a.processInbox()
+
+	// Save actor to DDB
+	_, err = ddb.save(a)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("dfetched actor: %+v\n", found)
+
+	// Get after save to see that save is working
+	found, err := ddb.get(actorName)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("fetched actor: %+v\n", found)
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)
