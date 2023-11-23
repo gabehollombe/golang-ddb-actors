@@ -11,6 +11,11 @@ type Actor struct {
 	State       map[string]interface{}
 	ProcessFunc ProcessFunc
 }
+type ActorDTO struct {
+	ID         ActorID
+	State      map[string]interface{}
+	InboxCount int
+}
 
 func NewActor(id ActorID, processFn ProcessFunc, state map[string]interface{}) Actor {
 	return Actor{

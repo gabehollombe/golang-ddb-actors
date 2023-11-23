@@ -38,12 +38,12 @@ func (r *ActorRepositoryInMem) get(id ActorID) Actor {
 	return r.Records[id]
 }
 
-type ActorDTO struct {
-	PK         string
-	SK         string
-	State      map[string]interface{}
-	InboxCount int
-}
+// type ActorDTO struct {
+// 	PK         string
+// 	SK         string
+// 	State      map[string]interface{}
+// 	InboxCount int
+// }
 
 // func (a *Actor) toDTO() ActorDTO {
 // 	return ActorDTO{
@@ -77,19 +77,15 @@ func (r *ActorRepositoryDdb) getKey(id ActorID) map[string]types.AttributeValue 
 	return map[string]types.AttributeValue{"pk": pk, "sk": sk}
 }
 
-// func (r *ActorRepositoryDdb) create(a Actor) (Actor, error) {
-// }
+func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}, inbox_count_adjustment int) (*dynamodb.UpdateItemInput, error) {
+	update := expression.UpdateBuilder{}
+	update = update.Set(expression.Name("state"), expression.Value(state))
+	update = update.Add(expression.Name("inbox_count"), expression.Value(inbox_count_adjustment))
 
-func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
-	// var err error
-	// var response *dynamodb.UpdateItemOutput
-	// var attributeMap map[string]map[string]interface{}
-	update := expression.
-		Set(expression.Name("state"), expression.Value(a.State))
-
+	// This is so we know if the item exists or not. If it doesn't we'll get a ConditionalCheckFailed exception.
 	condition := expression.And(
-		expression.Name("pk").Equal(expression.Value(fmt.Sprintf("actor#%v", a.ID))),
-		expression.Name("sk").Equal(expression.Value(fmt.Sprintf("actor#%v", a.ID))),
+		expression.Name("pk").Equal(expression.Value(fmt.Sprintf("actor#%v", id))),
+		expression.Name("sk").Equal(expression.Value(fmt.Sprintf("actor#%v", id))),
 	)
 
 	expr, err := expression.
@@ -97,14 +93,15 @@ func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
 		WithUpdate(update).
 		WithCondition(condition).
 		Build()
+
 	if err != nil {
 		log.Printf("Couldn't build expression for update. Here's why: %v\n", err)
-		return a, err
+		return nil, err
 	}
-	log.Printf("Expression: %+v\n", expr)
+	// log.Printf("Expression: %+v\n", expr)
 
-	key := r.getKey(a.ID)
-	_, err = r.DynamoDbClient.UpdateItem(context.TODO(), &dynamodb.UpdateItemInput{
+	key := r.getKey(id)
+	return &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(r.TableName),
 		Key:                       key,
 		ExpressionAttributeNames:  expr.Names(),
@@ -112,7 +109,19 @@ func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
 		ConditionExpression:       expr.Condition(),
 		UpdateExpression:          expr.Update(),
 		ReturnValues:              types.ReturnValueUpdatedNew,
-	})
+	}, nil
+}
+
+func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
+	// var err error
+	// var response *dynamodb.UpdateItemOutput
+	// var attributeMap map[string]map[string]interface{}
+	updateItemInput, err := r.makeUpdateItemInput(a.ID, a.State, 0)
+	fmt.Printf("UpdateItemInput: %+v\n", updateItemInput)
+	if err != nil {
+		return a, err
+	}
+	_, err = r.DynamoDbClient.UpdateItem(context.TODO(), updateItemInput)
 	if err == nil {
 		log.Printf("DDB Repo saved via update: %+v \n", a)
 		return a, nil
@@ -169,6 +178,131 @@ func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
 		}
 	}
 	return actor, err
+}
+
+func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool, error) {
+	// We'll use the current time in nanoseconds as the message ID
+	// if this ends up existing, we'll try again until we succeed in the insert
+	messageId := "NANO" //time.Now().UnixNano()
+
+	// Start a transaction
+	txOptions := &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Put: &types.Put{
+					Item: map[string]types.AttributeValue{
+						"PK":      &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"SK":      &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+						"message": &types.AttributeValueMemberS{Value: message},
+					},
+					TableName: aws.String(r.TableName),
+				},
+			},
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.TableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"SK": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+					},
+					UpdateExpression: aws.String("ADD InboxCount = InboxCount + :val"),
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":val": &types.AttributeValueMemberN{Value: "-1"},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := r.DynamoDbClient.TransactWriteItems(context.TODO(), txOptions)
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (r *ActorRepositoryDdb) getLastMessageID(id ActorID) (int, error) {
+	// TODO: Implement the logic to get the last message ID for the actor
+	// You can use the DynamoDB client to query the message table and retrieve the last message ID
+	// If there is no last message ID, return 0
+
+	return 0, nil
+}
+
+func (r *ActorRepositoryDdb) addMessageToTable(id ActorID, messageID int, message Message) error {
+	// TODO: Implement the logic to add the message to the message table
+	// You can use the DynamoDB client to put the message item with the actor ID as the PK and the message ID as the SK
+
+	return nil
+}
+
+func (r *ActorRepositoryDdb) incrementInboxCount(id ActorID) error {
+	// TODO: Implement the logic to increment the actor's inbox count by one
+	// You can use the DynamoDB client to update the actor item and increment the inbox count attribute
+
+	return nil
+}
+
+func (r *ActorRepositoryDdb) finishedWork(id ActorID, updatedState map[string]interface{}, consumedMessageIds []string) (bool, error) {
+	// In a transaction...
+	// 1. one PutItem with updated state and inbox_count -= length(consumedMessageIds)
+	// 2. one DeleteItem for each message id in consumedMessageIds
+
+	makeDeleteItems := func() []types.TransactWriteItem {
+		var deleteItems []types.TransactWriteItem
+		for _, messageId := range consumedMessageIds {
+			deleteItems = append(deleteItems, types.TransactWriteItem{
+				Delete: &types.Delete{
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+						"SK": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+					},
+					TableName: aws.String(r.TableName),
+				},
+			})
+		}
+		return deleteItems
+	}
+
+	// Create a transaction write request
+	// PutItem operation to update the state and inbox count
+	// marshalledState, err := attributevalue.Marshal(updatedState)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	updateItemInput, err := r.makeUpdateItemInput(id, updatedState, -len(consumedMessageIds))
+	if err != nil {
+		return false, err
+	}
+
+	updateInput := &types.Update{
+		TableName:                 updateItemInput.TableName,
+		Key:                       updateItemInput.Key,
+		UpdateExpression:          updateItemInput.UpdateExpression,
+		ConditionExpression:       updateItemInput.ConditionExpression,
+		ExpressionAttributeNames:  updateItemInput.ExpressionAttributeNames,
+		ExpressionAttributeValues: updateItemInput.ExpressionAttributeValues,
+	}
+
+	transactItems := []types.TransactWriteItem{
+		types.TransactWriteItem{
+			Update: updateInput,
+		}}
+	transactItems = append(transactItems, makeDeleteItems()...)
+
+	writeRequest := &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
+	}
+
+	// Execute the transaction write request
+	_, err = r.DynamoDbClient.TransactWriteItems(context.TODO(), writeRequest)
+	if err != nil {
+		log.Printf("Couldn't execute transaction write request. Here's why: %v\n", err)
+		return false, err
+	}
+
+	return true, nil
 }
 
 // func (r *ActorRepositoryDdb) scan() {

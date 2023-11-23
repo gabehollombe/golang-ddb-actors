@@ -39,13 +39,13 @@ func main() {
 	ddb := NewActorRepositoryDdb("actors", cfg)
 
 	// New Actor
-	actorName := "bob6"
+	actorName := "a"
 	a := NewActor(actorName, messageCountFunc, map[string]interface{}{"count": 2})
 
 	// Poke the Actor a bit...
 	// Send some messages
-	a.addMessage("hello")
-	a.addMessage("goodbye")
+	// a.addMessage("hello")
+	// a.addMessage("goodbye")
 	// // Ask the actor to do some work
 	// a.processInbox()
 
@@ -56,7 +56,7 @@ func main() {
 	}
 
 	// Get after save to see that save is working
-	found, err := ddb.get(actorName)
+	found, err := ddb.get("a")
 	if err != nil {
 		panic(err)
 	}
@@ -64,4 +64,6 @@ func main() {
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)
+
+	// ddb.finishedWork(a.ID)
 }
