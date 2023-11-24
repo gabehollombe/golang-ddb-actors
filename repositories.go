@@ -15,44 +15,29 @@ import (
 )
 
 type ActorRepository interface {
-	save(a Actor)
-	get(ActorID) Actor
+	save(a ActorBase)
+	get(ActorID) ActorBase
 }
 
 type ActorRepositoryInMem struct {
-	Records map[ActorID]Actor
+	Records map[ActorID]ActorBase
 }
 
 func NewActorRepositoryInMem() ActorRepositoryInMem {
 	return ActorRepositoryInMem{
-		Records: make(map[string]Actor),
+		Records: make(map[string]ActorBase),
 	}
 }
 
-func (r *ActorRepositoryInMem) save(a Actor) {
+func (r *ActorRepositoryInMem) save(a ActorBase) {
 	r.Records[a.ID] = a
 	fmt.Printf("Repo saved: %+v \n", a)
 
 }
 
-func (r *ActorRepositoryInMem) get(id ActorID) Actor {
+func (r *ActorRepositoryInMem) get(id ActorID) ActorBase {
 	return r.Records[id]
 }
-
-// type ActorDTO struct {
-// 	PK         string
-// 	SK         string
-// 	State      map[string]interface{}
-// 	InboxCount int
-// }
-
-// func (a *Actor) toDTO() ActorDTO {
-// 	return ActorDTO{
-// 		PK: fmt.Sprintf("actor#%v", a.ID),
-// 		SK: fmt.Sprintf("actor#%v", a.ID),
-// 		State: a.State,
-// 	}
-// }
 
 type ActorRepositoryDdb struct {
 	TableName      string
@@ -79,8 +64,9 @@ func (r *ActorRepositoryDdb) getKey(id ActorID) map[string]types.AttributeValue 
 }
 
 func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}, inbox_count_adjustment int) (*dynamodb.UpdateItemInput, error) {
+	// NOTE: We only allow updating state and inbox_count here.
+	//       Other fields on ActorBase like ID and Type should remain immutable.
 	update := expression.UpdateBuilder{}
-	update = update.Set(expression.Name("id"), expression.Value(id))
 	update = update.Set(expression.Name("state"), expression.Value(state))
 	update = update.Add(expression.Name("inbox_count"), expression.Value(inbox_count_adjustment))
 
@@ -114,19 +100,19 @@ func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]int
 	}, nil
 }
 
-func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
+func (r *ActorRepositoryDdb) save(a ActorBase) (bool, error) {
 	// var err error
 	// var response *dynamodb.UpdateItemOutput
 	// var attributeMap map[string]map[string]interface{}
 	updateItemInput, err := r.makeUpdateItemInput(a.ID, a.State, 0)
 	fmt.Printf("UpdateItemInput: %+v\n", updateItemInput)
 	if err != nil {
-		return a, err
+		return false, err
 	}
 	_, err = r.DynamoDbClient.UpdateItem(context.TODO(), updateItemInput)
 	if err == nil {
 		log.Printf("DDB Repo saved via update: %+v \n", a)
-		return a, nil
+		return false, nil
 	}
 
 	// We have an error.
@@ -134,39 +120,39 @@ func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
 	var ccf *types.ConditionalCheckFailedException
 	if !errors.As(err, &ccf) {
 		log.Printf("Couldn't update actor %v+. Here's why: %v\n", a, err)
-		return a, err
+		return false, err
 	}
 
 	// This error is a CCF, which means the item doesn't exist yet. Let's create it...
 	log.Print("Item doesn't exist yet. Creating...")
 
 	// IMPORTANT: We only want to manage some attributes for the actor here (e.g. state, inbox_count).
-	// So we put those in directly, not via the Actor struct.
+	// So we put those in directly, not via the ActorBase struct.
+	// TODO: Refactor this so that update and puts both use some common base for figuring out which fields go in from ActorBase to Dynamo
+	//  	 Right now this is duplicated between here and in makeUpdateItemInput.
 	state, err := attributevalue.Marshal(a.State)
 	if err != nil {
-		panic(err)
+		return false, err
 	}
 	item := make(map[string]types.AttributeValue)
 	item["pk"] = &types.AttributeValueMemberS{Value: "actor#" + a.ID}
 	item["sk"] = &types.AttributeValueMemberS{Value: "actor#" + a.ID}
 	item["inbox_count"] = &types.AttributeValueMemberN{Value: "0"}
+	item["id"] = &types.AttributeValueMemberS{Value: a.ID}
+	item["type"] = &types.AttributeValueMemberS{Value: a.Type}
 	item["state"] = state
 	_, err = r.DynamoDbClient.PutItem(context.TODO(), &dynamodb.PutItemInput{
-		TableName: aws.String(r.TableName), Item: item,
+		TableName: aws.String(r.TableName),
+		Item:      item,
 	})
 	if err != nil {
 		log.Printf("Couldn't add item to table. Here's why: %v\n", err)
-		return a, err
+		return false, err
 	}
-	return a, nil
-
-	// err = attributevalue.UnmarshalMap(response.Attributes, &attributeMap)
-	// if err != nil {
-	// 	log.Printf("Couldn't unmarshall update response. Here's why: %v\n", err)
-	// }
+	return true, nil
 }
 
-func (r *ActorRepositoryDdb) get(id ActorID) (*Actor, error) {
+func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
 	// load the actor
 	key := r.getKey(id)
 	actorResponse, err := r.DynamoDbClient.GetItem(context.TODO(), &dynamodb.GetItemInput{
@@ -174,14 +160,14 @@ func (r *ActorRepositoryDdb) get(id ActorID) (*Actor, error) {
 		TableName: aws.String(r.TableName),
 	})
 	if err != nil {
-		log.Printf("Couldn't get Actor ID: %v. Here's why: %v\n", id, err)
+		log.Printf("Couldn't get ActorBase ID: %v. Here's why: %v\n", id, err)
 		return nil, err
 	}
 	if actorResponse.Item == nil {
 		return nil, errors.New("actor not found")
 	}
-	actor := Actor{}
-	err = attributevalue.UnmarshalMap(actorResponse.Item, &actor)
+	actorBase := ActorBase{}
+	err = attributevalue.UnmarshalMap(actorResponse.Item, &actorBase)
 	if err != nil {
 		log.Printf("Couldn't unmarshal response. Here's why: %v\n", err)
 		return nil, err
@@ -207,9 +193,17 @@ func (r *ActorRepositoryDdb) get(id ActorID) (*Actor, error) {
 		log.Printf("Couldn't unmarshal messages. Here's why: %v\n", err)
 		return nil, err
 	}
-	actor.Inbox = messages
+	actorBase.Inbox = messages // TODO: should we be passing messages in via a method on the interface instead of the struct field?
 
-	return &actor, err
+	var actor Actor
+	switch actorBase.Type {
+	case "counting":
+		actor = NewCountingActorFromBase(actorBase)
+	default:
+		return nil, errors.New(fmt.Sprintf("unknown actor type: %v", actorBase.Type))
+	}
+
+	return actor, err
 }
 
 func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool, error) {
@@ -274,76 +268,6 @@ func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool,
 	return false, errors.New("max retries exceeded")
 }
 
-// func (r *ActorRepositoryDdb) removeMessages(actorId ActorID, messageIds []string) (bool, error) {
-// 	if len(messageIds) == 0 {
-// 		return false, errors.New("no messages to delete")
-// 	}
-// 	if len(messageIds) > 99 {
-// 		return false, errors.New("too many messages to delete -- max is 99 per batch")
-// 	}
-
-// 	makeDelete := func(actorId string, messageId string) *types.TransactWriteItem {
-// 		return &types.TransactWriteItem{
-// 			Delete: &types.Delete{
-// 				Key: map[string]types.AttributeValue{
-// 					"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
-// 					"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
-// 				},
-// 				TableName: aws.String(r.TableName),
-// 			},
-// 		}
-// 	}
-
-// 	deletes := make([]types.TransactWriteItem, len(messageIds))
-// 	for i, messageId := range messageIds {
-// 		deletes[i] = *makeDelete(actorId, messageId)
-// 	}
-
-// 	txOptions := &dynamodb.TransactWriteItemsInput{
-// 		TransactItems: []types.TransactWriteItem{
-// 			{
-// 				Update: &types.Update{
-// 					TableName: aws.String(r.TableName),
-// 					Key: map[string]types.AttributeValue{
-// 						"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
-// 						"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
-// 					},
-// 					UpdateExpression: aws.String("ADD inbox_count :inc"),
-// 					ExpressionAttributeValues: map[string]types.AttributeValue{
-// 						":inc": &types.AttributeValueMemberN{Value: "1"},
-// 					},
-// 				},
-// 			},
-// 		},
-// 	}
-
-// 	// Retry if we get a TransactionCanceledException
-// 	// Only retry up to 3 times
-// 	maxRetries := 3
-// 	retryCount := 0
-// 	for retryCount < maxRetries {
-// 		_, err := r.DynamoDbClient.TransactWriteItems(context.TODO(), txOptions)
-// 		if err == nil {
-// 			return true, nil
-// 		}
-
-// 		if err != nil {
-// 			var tce *types.TransactionCanceledException
-
-// 			// If it's not a TCE, we don't know what to do with it.
-// 			if !errors.As(err, &tce) {
-// 				return false, err
-// 			}
-
-// 			// It's a TCE. Let's retry...
-// 			log.Printf("Transaction canceled. Retrying...")
-// 			retryCount++
-// 		}
-// 	}
-
-// 	return false, errors.New("max retries exceeded")
-// }
-
 func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[string]interface{}, consumedMessageIds []string) (bool, error) {
 	// In a transaction...
 	// 1. one PutItem with updated state and inbox_count -= length(consumedMessageIds)
@@ -365,12 +289,6 @@ func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[stri
 		return deleteItems
 	}
 
-	// Create a transaction write request
-	// PutItem operation to update the state and inbox count
-	// marshalledState, err := attributevalue.Marshal(updatedState)
-	// if err != nil {
-	// 	panic(err)
-	// }
 	updateItemInput, err := r.makeUpdateItemInput(actorId, updatedState, -len(consumedMessageIds))
 	if err != nil {
 		return false, err
@@ -404,19 +322,3 @@ func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[stri
 
 	return true, nil
 }
-
-// func (r *ActorRepositoryDdb) scan() {
-// 	log.Println("scanning...")
-// 	res, err := r.DynamoDbClient.Scan(context.TODO(), &dynamodb.ScanInput{
-// 		TableName: aws.String(r.TableName),
-// 	})
-// 	if err != nil {
-// 		log.Printf("Couldn't scan. Here's why: %v\n", err)
-// 	} else {
-// 		log.Printf("%v+", res)
-// 		// err = attributevalue.UnmarshalListOfMaps(res.Items, &movies)
-// 		// if err != nil {
-// 		// 	log.Printf("Couldn't unmarshal query response. Here's why: %v\n", err)
-// 		// }
-// 	}
-// }

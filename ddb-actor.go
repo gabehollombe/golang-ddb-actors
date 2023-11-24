@@ -10,12 +10,7 @@ import (
 )
 
 func main() {
-	// identityFunc := func(a *Actor, m Message) []Message { return []Message{m} }
-
-	messageCountFunc := func(a *Actor, m Message) []Message {
-		a.State["count"] = (a.State["count"]).(int) + 1
-		return []Message{}
-	}
+	// identityFunc := func(a *ActorBase, m Message) []Message { return []Message{m} }
 
 	// Init local DDB config
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
@@ -38,42 +33,60 @@ func main() {
 	// Set up DDB repo
 	ddb := NewActorRepositoryDdb("actors", cfg)
 
-	// New Actor
+	// New ActorBase
 	actorName := "a"
-	a := NewActor(actorName, messageCountFunc, map[string]interface{}{"count": 2})
+	a := NewCountingActor(actorName)
+	_, err = ddb.save(a.ActorBase)
+	if err != nil {
+		panic(err)
+	}
 
-	// Poke the Actor a bit...
-	// Send some messages
-	// a.addMessage("hello")
-	// a.addMessage("goodbye")
-	// // Ask the actor to do some work
-	// a.processInbox()
+	// Send some messages (via the repo)
+	ddb.addMessage(a.ActorBase.ID, Message{Body: "hello"})
+	ddb.addMessage(a.ActorBase.ID, Message{Body: "goodbye"})
 
-	// Save actor to DDB
-	_, err = ddb.save(a)
+	// TODO: ddb.getActorsWithMessages()
+	// This will return a list of actors with messages in their inbox.
+	// for now we just get this one explicitly...
+	act, err := ddb.get(actorName)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("FETCHED actor before their work: %+v\n", act)
+
+	// Dispatch the messages to the actor.
+	processedMessages, updatedState := act.processMessages()
+	processedMessageIds := make([]MessageID, len(processedMessages))
+	for i, m := range processedMessages {
+		processedMessageIds[i] = m.ID
+	}
+
+	// Have actor acknowledge work on their messages
+	fmt.Printf("Updated state: %v \n", updatedState)
+	_, err = ddb.finishedWork(a.ActorBase.ID, updatedState, processedMessageIds)
 	if err != nil {
 		panic(err)
 	}
 
 	// Get after save to see that save is working
-	act, err := ddb.get("a")
+	act, err = ddb.get(actorName)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("FETCHED actor: %+v\n", a)
+	fmt.Printf("FETCHED actor after their work: %+v\n", act)
 
-	ok, err := ddb.addMessage(act.ID, Message{Body: "hello"})
-	if !ok {
-		panic(err)
-	}
+	// _, err = ddb.addMessage(act.ID, Message{Body: "hello"})
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	act, err = ddb.get("a")
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("fetched actor: %+v\n", act)
+	// act, err = ddb.get(actorName)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// fmt.Printf("fetched actor: %+v\n", act)
 
-	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
+	// fmt.Printf("ActorBase state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)
 
 	// ddb.finishedWork(a.ID)
