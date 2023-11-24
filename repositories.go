@@ -167,8 +167,9 @@ func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
 }
 
 func (r *ActorRepositoryDdb) get(id ActorID) (*Actor, error) {
+	// load the actor
 	key := r.getKey(id)
-	response, err := r.DynamoDbClient.GetItem(context.TODO(), &dynamodb.GetItemInput{
+	actorResponse, err := r.DynamoDbClient.GetItem(context.TODO(), &dynamodb.GetItemInput{
 		Key:       key,
 		TableName: aws.String(r.TableName),
 	})
@@ -176,16 +177,38 @@ func (r *ActorRepositoryDdb) get(id ActorID) (*Actor, error) {
 		log.Printf("Couldn't get Actor ID: %v. Here's why: %v\n", id, err)
 		return nil, err
 	}
-	if response.Item == nil {
+	if actorResponse.Item == nil {
 		return nil, errors.New("actor not found")
 	}
-
 	actor := Actor{}
-	err = attributevalue.UnmarshalMap(response.Item, &actor)
+	err = attributevalue.UnmarshalMap(actorResponse.Item, &actor)
 	if err != nil {
 		log.Printf("Couldn't unmarshal response. Here's why: %v\n", err)
 		return nil, err
 	}
+
+	// load all of the actor's messages
+	query := &dynamodb.QueryInput{
+		TableName:              aws.String(r.TableName),
+		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :sk)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", id)},
+			":sk": &types.AttributeValueMemberS{Value: "message#"},
+		},
+	}
+	messagesResponse, err := r.DynamoDbClient.Query(context.TODO(), query)
+	if err != nil {
+		log.Printf("Couldn't query messages. Here's why: %v\n", err)
+		return nil, err
+	}
+	var messages []Message
+	err = attributevalue.UnmarshalListOfMaps(messagesResponse.Items, &messages)
+	if err != nil {
+		log.Printf("Couldn't unmarshal messages. Here's why: %v\n", err)
+		return nil, err
+	}
+	actor.Inbox = messages
+
 	return &actor, err
 }
 
@@ -199,10 +222,10 @@ func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool,
 			{
 				Put: &types.Put{
 					Item: map[string]types.AttributeValue{
-						"pk":      &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
-						"sk":      &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
-						"message": &types.AttributeValueMemberS{Value: message},
-						"id":      &types.AttributeValueMemberS{Value: fmt.Sprint(messageId)},
+						"pk":   &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"sk":   &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+						"body": &types.AttributeValueMemberS{Value: message.Body},
+						"id":   &types.AttributeValueMemberS{Value: fmt.Sprint(messageId)},
 					},
 					ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
 					TableName:           aws.String(r.TableName),
@@ -251,29 +274,77 @@ func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool,
 	return false, errors.New("max retries exceeded")
 }
 
-func (r *ActorRepositoryDdb) getLastMessageID(id ActorID) (int, error) {
-	// TODO: Implement the logic to get the last message ID for the actor
-	// You can use the DynamoDB client to query the message table and retrieve the last message ID
-	// If there is no last message ID, return 0
+// func (r *ActorRepositoryDdb) removeMessages(actorId ActorID, messageIds []string) (bool, error) {
+// 	if len(messageIds) == 0 {
+// 		return false, errors.New("no messages to delete")
+// 	}
+// 	if len(messageIds) > 99 {
+// 		return false, errors.New("too many messages to delete -- max is 99 per batch")
+// 	}
 
-	return 0, nil
-}
+// 	makeDelete := func(actorId string, messageId string) *types.TransactWriteItem {
+// 		return &types.TransactWriteItem{
+// 			Delete: &types.Delete{
+// 				Key: map[string]types.AttributeValue{
+// 					"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+// 					"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+// 				},
+// 				TableName: aws.String(r.TableName),
+// 			},
+// 		}
+// 	}
 
-func (r *ActorRepositoryDdb) addMessageToTable(id ActorID, messageID int, message Message) error {
-	// TODO: Implement the logic to add the message to the message table
-	// You can use the DynamoDB client to put the message item with the actor ID as the PK and the message ID as the SK
+// 	deletes := make([]types.TransactWriteItem, len(messageIds))
+// 	for i, messageId := range messageIds {
+// 		deletes[i] = *makeDelete(actorId, messageId)
+// 	}
 
-	return nil
-}
+// 	txOptions := &dynamodb.TransactWriteItemsInput{
+// 		TransactItems: []types.TransactWriteItem{
+// 			{
+// 				Update: &types.Update{
+// 					TableName: aws.String(r.TableName),
+// 					Key: map[string]types.AttributeValue{
+// 						"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+// 						"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+// 					},
+// 					UpdateExpression: aws.String("ADD inbox_count :inc"),
+// 					ExpressionAttributeValues: map[string]types.AttributeValue{
+// 						":inc": &types.AttributeValueMemberN{Value: "1"},
+// 					},
+// 				},
+// 			},
+// 		},
+// 	}
 
-func (r *ActorRepositoryDdb) incrementInboxCount(id ActorID) error {
-	// TODO: Implement the logic to increment the actor's inbox count by one
-	// You can use the DynamoDB client to update the actor item and increment the inbox count attribute
+// 	// Retry if we get a TransactionCanceledException
+// 	// Only retry up to 3 times
+// 	maxRetries := 3
+// 	retryCount := 0
+// 	for retryCount < maxRetries {
+// 		_, err := r.DynamoDbClient.TransactWriteItems(context.TODO(), txOptions)
+// 		if err == nil {
+// 			return true, nil
+// 		}
 
-	return nil
-}
+// 		if err != nil {
+// 			var tce *types.TransactionCanceledException
 
-func (r *ActorRepositoryDdb) finishedWork(id ActorID, updatedState map[string]interface{}, consumedMessageIds []string) (bool, error) {
+// 			// If it's not a TCE, we don't know what to do with it.
+// 			if !errors.As(err, &tce) {
+// 				return false, err
+// 			}
+
+// 			// It's a TCE. Let's retry...
+// 			log.Printf("Transaction canceled. Retrying...")
+// 			retryCount++
+// 		}
+// 	}
+
+// 	return false, errors.New("max retries exceeded")
+// }
+
+func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[string]interface{}, consumedMessageIds []string) (bool, error) {
 	// In a transaction...
 	// 1. one PutItem with updated state and inbox_count -= length(consumedMessageIds)
 	// 2. one DeleteItem for each message id in consumedMessageIds
@@ -284,8 +355,8 @@ func (r *ActorRepositoryDdb) finishedWork(id ActorID, updatedState map[string]in
 			deleteItems = append(deleteItems, types.TransactWriteItem{
 				Delete: &types.Delete{
 					Key: map[string]types.AttributeValue{
-						"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
-						"SK": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
+						"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+						"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
 					},
 					TableName: aws.String(r.TableName),
 				},
@@ -300,7 +371,7 @@ func (r *ActorRepositoryDdb) finishedWork(id ActorID, updatedState map[string]in
 	// if err != nil {
 	// 	panic(err)
 	// }
-	updateItemInput, err := r.makeUpdateItemInput(id, updatedState, -len(consumedMessageIds))
+	updateItemInput, err := r.makeUpdateItemInput(actorId, updatedState, -len(consumedMessageIds))
 	if err != nil {
 		return false, err
 	}

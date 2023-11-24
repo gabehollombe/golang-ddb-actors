@@ -1,8 +1,12 @@
 package main
 
 type ActorID = string
+type MessageID = string
 
-type Message = string
+type Message struct {
+	ID   MessageID
+	Body string
+}
 type ProcessFunc func(*Actor, Message) []Message
 
 type Actor struct {

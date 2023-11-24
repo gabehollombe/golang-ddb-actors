@@ -62,16 +62,16 @@ func main() {
 	}
 	fmt.Printf("FETCHED actor: %+v\n", a)
 
-	ok, err := ddb.addMessage(act.ID, "hello")
+	ok, err := ddb.addMessage(act.ID, Message{Body: "hello"})
 	if !ok {
 		panic(err)
 	}
 
-	// a, err = ddb.get("a")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// fmt.Printf("fetched actor: %+v\n", a)
+	act, err = ddb.get("a")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("fetched actor: %+v\n", act)
 
 	// fmt.Printf("Actor state: %+v, Outs: %+v \n", a.State, outs)
 	// fmt.Printf("Repo: %+v \n", repo)
