@@ -7,30 +7,20 @@ type Message struct {
 	ID   MessageID
 	Body string
 }
-type ProcessFunc func(*ActorBase, Message) []Message
 
-//	type MessageReceiver interface {
-//		addMessage(Message)
-//	}
 type MessageProcessor interface {
 	processMessages() ([]Message, map[string]interface{})
 }
 
 type Actor interface {
-	// MessageReceiver
 	MessageProcessor
 }
 
 type ActorBase struct {
-	ID           ActorID
-	Inbox        []Message
-	State        map[string]interface{}
-	Type         string
-	TypeDelegate MessageProcessor
-}
-
-func (a *ActorBase) processMessages() ([]Message, map[string]interface{}) {
-	return a.TypeDelegate.processMessages()
+	ID    ActorID
+	Inbox []Message
+	State map[string]interface{}
+	Type  string
 }
 
 type CountingActor struct {
@@ -49,7 +39,7 @@ func NewCountingActorFromBase(a ActorBase) CountingActor {
 	}
 }
 
-// Returns list of messages processed
+// Returns list of messages processed and a new updated state for persistence
 func (a CountingActor) processMessages() ([]Message, map[string]interface{}) {
 	processedMessages := make([]Message, 0)
 	workingState := a.ActorBase.State
@@ -68,20 +58,3 @@ func NewActorBase(id ActorID, state map[string]interface{}, messages []Message, 
 		Type:  actorType,
 	}
 }
-
-// func (a *ActorBase) addMessage(m Message) {
-// 	a.Inbox = append(a.Inbox, m)
-// }
-
-// func (a *ActorBase) processInbox() []Message {
-// 	outs := make([]Message, 0)
-
-// 	// Process all messages in inbox
-// 	for _, m := range a.Inbox {
-// 		res := a.ProcessFunc(a, m)
-// 		outs = append(outs, res...)
-// 	}
-
-// 	// Return any messages to send out
-// 	return outs
-// }

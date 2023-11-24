@@ -200,7 +200,7 @@ func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
 	case "counting":
 		actor = NewCountingActorFromBase(actorBase)
 	default:
-		return nil, errors.New(fmt.Sprintf("unknown actor type: %v", actorBase.Type))
+		return nil, fmt.Errorf("unknown actor type: %v", actorBase.Type)
 	}
 
 	return actor, err

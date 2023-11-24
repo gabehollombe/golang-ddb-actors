@@ -10,9 +10,11 @@ import (
 )
 
 func main() {
-	// identityFunc := func(a *ActorBase, m Message) []Message { return []Message{m} }
+	/*
+		Until we write some tests, this serves as a simple harness for the concept...
+	*/
 
-	// Init local DDB config
+	// Init a local DynamoDB config
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion("us-east-1"),
 		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
@@ -30,64 +32,52 @@ func main() {
 		panic(err)
 	}
 
-	// Set up DDB repo
+	// Get a DynamoDB Actor repo
 	ddb := NewActorRepositoryDdb("actors", cfg)
 
-	// New ActorBase
+	// Useful for making sure we work on the same actor name in this test harness
 	actorName := "a"
+
+	// Make a new counting actor. It's job is just to count the number of messages it receives and keep track of that in its state.
 	a := NewCountingActor(actorName)
 	_, err = ddb.save(a.ActorBase)
 	if err != nil {
 		panic(err)
 	}
 
-	// Send some messages (via the repo)
+	// Send some messages to the actor. We do this via the repo, and not directly in memory, because we are trying
+	// to simulate the actor being on a different machine. A worker would pick up this actor's current state and all its unprocessed messages,
+	// then handle the messages (in memory) and send the updated state (and acked message IDs) back to the repo.
 	ddb.addMessage(a.ActorBase.ID, Message{Body: "hello"})
 	ddb.addMessage(a.ActorBase.ID, Message{Body: "goodbye"})
 
-	// TODO: ddb.getActorsWithMessages()
-	// This will return a list of actors with messages in their inbox.
-	// for now we just get this one explicitly...
+	// Now we simulate a worker picking up the actor's state and messages from the repo.
+	// TODO: eventually with something like ddb.getActorsWithMessages()
+	// This should return a list of actors with messages in their inbox.
+	// for now we just get the actor by name to keep things simpler...
 	act, err := ddb.get(actorName)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("FETCHED actor before their work: %+v\n", act)
+	fmt.Printf("Before starting work, actor looks like this from DB: %+v\n", act)
 
-	// Dispatch the messages to the actor.
+	// Tell the actor to process its messages.
 	processedMessages, updatedState := act.processMessages()
 	processedMessageIds := make([]MessageID, len(processedMessages))
 	for i, m := range processedMessages {
 		processedMessageIds[i] = m.ID
 	}
 
-	// Have actor acknowledge work on their messages
-	fmt.Printf("Updated state: %v \n", updatedState)
+	// Acknowledge the messages that were processed and submit updated state.
 	_, err = ddb.finishedWork(a.ActorBase.ID, updatedState, processedMessageIds)
 	if err != nil {
 		panic(err)
 	}
 
-	// Get after save to see that save is working
+	// Here's another actor Get after our acknowledgement so we can see that updated state was persisted and messages were removed
 	act, err = ddb.get(actorName)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("FETCHED actor after their work: %+v\n", act)
-
-	// _, err = ddb.addMessage(act.ID, Message{Body: "hello"})
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// act, err = ddb.get(actorName)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// fmt.Printf("fetched actor: %+v\n", act)
-
-	// fmt.Printf("ActorBase state: %+v, Outs: %+v \n", a.State, outs)
-	// fmt.Printf("Repo: %+v \n", repo)
-
-	// ddb.finishedWork(a.ID)
+	fmt.Printf("After completing work, actor looks like this from DB: %+v\n", act)
 }
