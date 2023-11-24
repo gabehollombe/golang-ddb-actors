@@ -80,6 +80,7 @@ func (r *ActorRepositoryDdb) getKey(id ActorID) map[string]types.AttributeValue 
 
 func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}, inbox_count_adjustment int) (*dynamodb.UpdateItemInput, error) {
 	update := expression.UpdateBuilder{}
+	update = update.Set(expression.Name("id"), expression.Value(id))
 	update = update.Set(expression.Name("state"), expression.Value(state))
 	update = update.Add(expression.Name("inbox_count"), expression.Value(inbox_count_adjustment))
 
@@ -165,20 +166,27 @@ func (r *ActorRepositoryDdb) save(a Actor) (Actor, error) {
 	// }
 }
 
-func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
-	actor := Actor{}
+func (r *ActorRepositoryDdb) get(id ActorID) (*Actor, error) {
+	key := r.getKey(id)
 	response, err := r.DynamoDbClient.GetItem(context.TODO(), &dynamodb.GetItemInput{
-		Key: r.getKey(id), TableName: aws.String(r.TableName),
+		Key:       key,
+		TableName: aws.String(r.TableName),
 	})
 	if err != nil {
 		log.Printf("Couldn't get Actor ID: %v. Here's why: %v\n", id, err)
-	} else {
-		err = attributevalue.UnmarshalMap(response.Item, &actor)
-		if err != nil {
-			log.Printf("Couldn't unmarshal response. Here's why: %v\n", err)
-		}
+		return nil, err
 	}
-	return actor, err
+	if response.Item == nil {
+		return nil, errors.New("actor not found")
+	}
+
+	actor := Actor{}
+	err = attributevalue.UnmarshalMap(response.Item, &actor)
+	if err != nil {
+		log.Printf("Couldn't unmarshal response. Here's why: %v\n", err)
+		return nil, err
+	}
+	return &actor, err
 }
 
 func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool, error) {
@@ -186,7 +194,6 @@ func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool,
 	// if this ends up existing, we'll try again until we succeed in the insert
 	messageId := time.Now().UnixNano()
 
-	// Start a transaction
 	txOptions := &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
 			{
@@ -195,6 +202,7 @@ func (r *ActorRepositoryDdb) addMessage(actorId ActorID, message Message) (bool,
 						"pk":      &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
 						"sk":      &types.AttributeValueMemberS{Value: fmt.Sprintf("message#%v", messageId)},
 						"message": &types.AttributeValueMemberS{Value: message},
+						"id":      &types.AttributeValueMemberS{Value: fmt.Sprint(messageId)},
 					},
 					ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
 					TableName:           aws.String(r.TableName),
@@ -307,7 +315,7 @@ func (r *ActorRepositoryDdb) finishedWork(id ActorID, updatedState map[string]in
 	}
 
 	transactItems := []types.TransactWriteItem{
-		types.TransactWriteItem{
+		{
 			Update: updateInput,
 		}}
 	transactItems = append(transactItems, makeDeleteItems()...)
