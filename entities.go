@@ -24,7 +24,7 @@ type ActorBase struct {
 }
 
 type CountingActor struct {
-	ActorBase ActorBase
+	ActorBase
 }
 
 func NewCountingActor(id ActorID) CountingActor {
@@ -42,8 +42,8 @@ func NewCountingActorFromBase(a ActorBase) CountingActor {
 // Returns list of messages processed and a new updated state for persistence
 func (a CountingActor) processMessages() ([]Message, map[string]interface{}) {
 	processedMessages := make([]Message, 0)
-	workingState := a.ActorBase.State
-	for _, m := range a.ActorBase.Inbox {
+	workingState := a.State
+	for _, m := range a.Inbox {
 		workingState["count"] = (workingState["count"]).(float64) + 1
 		processedMessages = append(processedMessages, m)
 	}
