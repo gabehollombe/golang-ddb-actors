@@ -88,6 +88,7 @@ func main() {
 		}
 
 		// Acknowledge the messages that were processed and submit updated state.
+		// Note: this unlocks the worker too.
 		_, err = ddb.finishedWork(a.ActorBase.ID, updatedState, processedMessageIds)
 		if err != nil {
 			panic(err)

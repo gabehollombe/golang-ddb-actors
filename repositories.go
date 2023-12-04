@@ -64,12 +64,16 @@ func (r *ActorRepositoryDdb) getKey(id ActorID) map[string]types.AttributeValue 
 	return map[string]types.AttributeValue{"pk": pk, "sk": sk}
 }
 
-func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}, inbox_count_adjustment int) (*dynamodb.UpdateItemInput, error) {
+func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}, inbox_count_adjustment int, unlock bool) (*dynamodb.UpdateItemInput, error) {
 	// NOTE: We only allow updating state and inbox_count here.
 	//       Other fields on ActorBase like ID and Type should remain immutable.
 	update := expression.UpdateBuilder{}
 	update = update.Set(expression.Name("state"), expression.Value(state))
 	update = update.Add(expression.Name("inbox_count"), expression.Value(inbox_count_adjustment))
+	if unlock {
+		update = update.Remove(expression.Name("worker_nonce"))
+		update = update.Remove(expression.Name("expires_at"))
+	}
 
 	// This is so we know if the item exists or not. If it doesn't we'll get a ConditionalCheckFailed exception.
 	condition := expression.And(
@@ -105,7 +109,7 @@ func (r *ActorRepositoryDdb) save(a ActorBase) (bool, error) {
 	// var err error
 	// var response *dynamodb.UpdateItemOutput
 	// var attributeMap map[string]map[string]interface{}
-	updateItemInput, err := r.makeUpdateItemInput(a.ID, a.State, 0)
+	updateItemInput, err := r.makeUpdateItemInput(a.ID, a.State, 0, false)
 	fmt.Printf("UpdateItemInput: %+v\n", updateItemInput)
 	if err != nil {
 		return false, err
@@ -291,7 +295,7 @@ func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[stri
 		return deleteItems
 	}
 
-	updateItemInput, err := r.makeUpdateItemInput(actorId, updatedState, -len(consumedMessageIds))
+	updateItemInput, err := r.makeUpdateItemInput(actorId, updatedState, -len(consumedMessageIds), true)
 	if err != nil {
 		return false, err
 	}
