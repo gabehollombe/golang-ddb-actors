@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -51,31 +53,49 @@ func main() {
 	ddb.addMessage(a.ActorBase.ID, Message{Body: "hello"})
 	ddb.addMessage(a.ActorBase.ID, Message{Body: "goodbye"})
 
-	// Now we simulate a worker picking up the actor's state and messages from the repo.
-	// TODO: eventually with something like ddb.getActorsWithMessages()
-	// This should return a list of actors with messages in their inbox.
-	// for now we just get the actor by name to keep things simpler...
-	act, err := ddb.get(actorName)
+	// Now we simulate a worker picking up all of the actors with messages in their inbox
+	// and processing those messages. The worker will then send the updated state
+	// and acked message IDs back to the repo.
+	WORKER_ID := "worker1"
+	actorIds, err := ddb.getActorIdsWithMessages()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Before starting work, actor looks like this from DB: %+v\n", act)
+	for _, id := range actorIds {
+		// TOOD: we _COULD_ optimize this get() away but it would require casing the actor to its appropriate type
+		// and that logic already exists in the get, so we just make the get() call for now for simplicity...
+		act, err := ddb.get(id)
+		if err != nil {
+			panic(err)
+		}
 
-	// Tell the actor to process its messages.
-	processedMessages, updatedState := act.processMessages()
-	processedMessageIds := make([]MessageID, len(processedMessages))
-	for i, m := range processedMessages {
-		processedMessageIds[i] = m.ID
-	}
+		// Lock the actor
+		workerNonce := WORKER_ID + "_" + fmt.Sprint(time.Now().Unix())
+		expiresAt := time.Now().Add(time.Second * 60)
+		_, err = ddb.lockActor(id, workerNonce, expiresAt)
+		if err != nil {
+			log.Printf("Failed to lock actor %s: %s. Skipping...", id, err.Error())
+			continue
+		}
 
-	// Acknowledge the messages that were processed and submit updated state.
-	_, err = ddb.finishedWork(a.ActorBase.ID, updatedState, processedMessageIds)
-	if err != nil {
-		panic(err)
+		fmt.Printf("Before starting work, actor looks like this from DB: %+v\n", act)
+
+		// Tell the actor to process its messages.
+		processedMessages, updatedState := act.processMessages()
+		processedMessageIds := make([]MessageID, len(processedMessages))
+		for i, m := range processedMessages {
+			processedMessageIds[i] = m.ID
+		}
+
+		// Acknowledge the messages that were processed and submit updated state.
+		_, err = ddb.finishedWork(a.ActorBase.ID, updatedState, processedMessageIds)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// Here's another actor Get after our acknowledgement so we can see that updated state was persisted and messages were removed
-	act, err = ddb.get(actorName)
+	act, err := ddb.get(actorName)
 	if err != nil {
 		panic(err)
 	}

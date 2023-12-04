@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -198,6 +199,7 @@ func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
 	var actor Actor
 	switch actorBase.Type {
 	case "counting":
+		// TODO: how will we handle versioning of actor types?
 		actor = NewCountingActorFromBase(actorBase)
 	default:
 		return nil, fmt.Errorf("unknown actor type: %v", actorBase.Type)
@@ -321,4 +323,84 @@ func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[stri
 	}
 
 	return true, nil
+}
+
+func (r *ActorRepositoryDdb) getActorIdsWithMessages() ([]ActorID, error) {
+	// IMPORTANT: DDB scans only return 1MB of results at once, so we need to paginate somewhere so we know we get all the data
+	// For now, we'll do that here, but we might want to make this a separate method on the repo so the caller can decide how to handle pagination
+
+	var actorIds = make([]ActorID, 0)
+	var lastEvaluatedKey map[string]types.AttributeValue
+
+	for {
+		// Do the scan
+		scanInput := &dynamodb.ScanInput{
+			TableName:        aws.String(r.TableName),
+			IndexName:        aws.String("sort_by_inbox_count"),
+			FilterExpression: aws.String("inbox_count > :zero"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":zero": &types.AttributeValueMemberN{Value: "0"},
+			},
+			ExclusiveStartKey: lastEvaluatedKey,
+		}
+		scanOutput, err := r.DynamoDbClient.Scan(context.TODO(), scanInput)
+		if err != nil {
+			log.Printf("Couldn't scan for actors with inbox counts. Here's why: %v\n", err)
+			return nil, err
+		}
+
+		// Parse the items in the response
+		var actorBase ActorBase
+		for _, item := range scanOutput.Items {
+			err = attributevalue.UnmarshalMap(item, &actorBase)
+			if err != nil {
+				log.Printf("Couldn't unmarshal items. Here's why: %v\n", err)
+				return nil, err
+			}
+			actorIds = append(actorIds, actorBase.ID)
+		}
+
+		// If LastEvaluatedKey is not nil, we need to paginate
+		if scanOutput.LastEvaluatedKey != nil {
+			lastEvaluatedKey = scanOutput.LastEvaluatedKey
+		} else {
+			break
+		}
+	}
+
+	return actorIds, nil
+}
+
+func (r *ActorRepositoryDdb) lockActor(actorId ActorID, workerNonce string, expiresAt time.Time) (bool, error) {
+	// Define the update item input
+	updateInput := &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.TableName),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+			"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", actorId)},
+		},
+		UpdateExpression:    aws.String("SET worker_nonce = :workerNonce, expires_at = :expiresAt"),
+		ConditionExpression: aws.String("attribute_not_exists(lock_expires_at) OR lock_expires_at >= :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":workerNonce": &types.AttributeValueMemberS{Value: workerNonce},
+			":now":         &types.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+			":expiresAt":   &types.AttributeValueMemberN{Value: strconv.FormatInt(expiresAt.Unix(), 10)},
+		},
+		ReturnValues: types.ReturnValueUpdatedNew,
+	}
+
+	// Execute the update item operation
+	_, err := r.DynamoDbClient.UpdateItem(context.TODO(), updateInput)
+	if err == nil {
+		return true, nil
+	}
+
+	var ccf *types.ConditionalCheckFailedException
+	if !errors.As(err, &ccf) {
+		log.Printf("Couldn't lock actor. Here's why: %v\n", err)
+		return false, err
+	}
+
+	log.Printf("Couldn't lock because conditional check failed: %v", err)
+	return false, err
 }

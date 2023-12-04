@@ -44,8 +44,10 @@ func (a CountingActor) processMessages() ([]Message, map[string]interface{}) {
 	processedMessages := make([]Message, 0)
 	workingState := a.State
 	for _, m := range a.Inbox {
+		// NOTE: all numbers are marshalled/unmarshalled as float64 by the dynamodb SDK. The consumer needs to cast to int or float as needed.
 		workingState["count"] = (workingState["count"]).(float64) + 1
 		processedMessages = append(processedMessages, m)
+
 	}
 	return processedMessages, workingState
 }
