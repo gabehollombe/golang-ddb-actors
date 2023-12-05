@@ -52,8 +52,8 @@ func main() {
 	// Send some messages to the actor. We do this via the queue, and not directly in memory, because we are trying
 	// to simulate the actor being on a different machine. A worker would pick up this actor's current state and all its unprocessed messages,
 	// then handle the messages (in memory) and send the updated state (and acked message IDs) back to the repo.
-	queue.putMessage("hello", actorName, "dedupe-5")
-	queue.putMessage("goodbye", actorName, "dedupe-6")
+	queue.putMessage("hello", actorName, "dedupe-8")
+	queue.putMessage("goodbye", actorName, "dedupe-9")
 
 	// Now we simulate a worker picking up all of the actors with messages in their inbox
 	// and processing those messages. The worker will then send the updated state
@@ -70,11 +70,11 @@ func main() {
 			panic(err)
 		}
 
-		// No need to lock the actor because we are using an SQS Fifo queue
+		// NOTE: No need to lock the actor because we are using an SQS Fifo queue,
+		// and messages are grouped by actor ID. So we can process all messages for a given actor
+		// in a single worker. No other worker will get messages until we ack these messages from the queue...
 
-		fmt.Printf("Before starting work, actor looks like this from DB: %+v\n", act)
-
-		// Tell the actor to process its messages.
+		// Process the message
 		processedMessage, updatedState := act.processMessage(msg)
 
 		// Submit the updated state and, if that succeeds, remove the messages from the queue
