@@ -5,10 +5,12 @@ type MessageID = string
 
 type Message struct {
 	ID   MessageID
+	To   ActorID
 	Body string
 }
 
 type MessageProcessor interface {
+	processMessage(Message) (Message, map[string]interface{})
 	processMessages() ([]Message, map[string]interface{})
 }
 
@@ -20,7 +22,6 @@ type ActorBase struct {
 	ID    ActorID
 	Inbox []Message
 	State map[string]interface{}
-	Type  string
 }
 
 type CountingActor struct {
@@ -28,15 +29,23 @@ type CountingActor struct {
 }
 
 func NewCountingActor(id ActorID) CountingActor {
-	state := map[string]interface{}{"count": 0}
+	state := map[string]interface{}{"_type": "counting", "count": 0}
 	return CountingActor{
-		ActorBase: NewActorBase(id, state, []Message{}, "counting", CountingActor{}),
+		ActorBase: NewActorBase(id, state, []Message{}),
 	}
 }
 func NewCountingActorFromBase(a ActorBase) CountingActor {
 	return CountingActor{
-		ActorBase: NewActorBase(a.ID, a.State, a.Inbox, "counting", CountingActor{}),
+		ActorBase: NewActorBase(a.ID, a.State, a.Inbox),
 	}
+}
+
+// Returns the message if it processed it. Otherwise returns nil. TODO: come up with better error handling?
+func (a CountingActor) processMessage(message Message) (Message, map[string]interface{}) {
+	workingState := a.State
+	// NOTE: all numbers are marshalled/unmarshalled as float64 by the dynamodb SDK. The consumer needs to cast to int or float as needed.
+	workingState["count"] = (workingState["count"]).(float64) + 1
+	return message, workingState
 }
 
 // Returns list of messages processed and a new updated state for persistence
@@ -52,11 +61,10 @@ func (a CountingActor) processMessages() ([]Message, map[string]interface{}) {
 	return processedMessages, workingState
 }
 
-func NewActorBase(id ActorID, state map[string]interface{}, messages []Message, actorType string, typeDelegate MessageProcessor) ActorBase {
+func NewActorBase(id ActorID, state map[string]interface{}, messages []Message) ActorBase {
 	return ActorBase{
 		ID:    id,
 		Inbox: messages,
 		State: state,
-		Type:  actorType,
 	}
 }

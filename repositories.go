@@ -13,31 +13,102 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
+
+type FifoQueue interface {
+	putMessage(body string, groupId string, deduplicationId string) (bool, error)
+	getMessages() ([]Message, error)
+}
+
+type SqsFifoQueueClient struct {
+	queueUrl  string
+	sqsClient *sqs.Client
+}
+
+func NewSqsFifoQueueClient(queueUrl string, sdkConfig aws.Config) SqsFifoQueueClient {
+	return SqsFifoQueueClient{
+		queueUrl:  queueUrl,
+		sqsClient: sqs.NewFromConfig(sdkConfig),
+	}
+}
+
+func (q *SqsFifoQueueClient) putMessage(body string, groupId string, deduplicationId string) (bool, error) {
+	// Define the send message input
+	sendMsgInput := &sqs.SendMessageInput{
+		QueueUrl:               aws.String(q.queueUrl),
+		MessageBody:            aws.String(body),
+		MessageGroupId:         aws.String(groupId),
+		MessageDeduplicationId: aws.String(deduplicationId),
+	}
+
+	// Execute the send message operation
+	_, err := q.sqsClient.SendMessage(context.TODO(), sendMsgInput)
+	if err != nil {
+		log.Printf("Couldn't send message. Here's why: %v\n", err)
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (q *SqsFifoQueueClient) getMessages() ([]Message, error) {
+	// Define the receive message input
+	receiveMsgInput := &sqs.ReceiveMessageInput{
+		QueueUrl:                aws.String(q.queueUrl),
+		MaxNumberOfMessages:     10,
+		ReceiveRequestAttemptId: aws.String(strconv.FormatInt(time.Now().UnixNano(), 10)),
+		AttributeNames: []sqsTypes.QueueAttributeName{
+			sqsTypes.QueueAttributeName(sqsTypes.MessageSystemAttributeNameMessageGroupId),
+		},
+	}
+
+	// Execute the receive message operation
+	resp, err := q.sqsClient.ReceiveMessage(context.TODO(), receiveMsgInput)
+	if err != nil {
+		log.Printf("Couldn't receive messages. Here's why: %v\n", err)
+		return nil, err
+	}
+
+	// Parse the received messages into a slice of Message structs
+	messages := make([]Message, 0, len(resp.Messages))
+	for _, msg := range resp.Messages {
+		message := Message{
+			ID:   aws.ToString(msg.ReceiptHandle),
+			To:   msg.Attributes["MessageGroupId"],
+			Body: aws.ToString(msg.Body),
+		}
+		// log.Printf("Received message: %v+\n", message)
+		log.Printf("Attrs: %v+\n", msg.Attributes)
+		messages = append(messages, message)
+	}
+
+	log.Printf("Received messages: %v+\n", messages)
+	return messages, nil
+}
+
+func (q *SqsFifoQueueClient) acknowledgeMessage(receiptHandle string) (bool, error) {
+	// Define the delete message input
+	deleteMsgInput := &sqs.DeleteMessageInput{
+		QueueUrl:      aws.String(q.queueUrl),
+		ReceiptHandle: aws.String(receiptHandle),
+	}
+
+	// Execute the delete message operation
+	_, err := q.sqsClient.DeleteMessage(context.TODO(), deleteMsgInput)
+	if err != nil {
+		log.Printf("Couldn't delete message. Here's why: %v\n", err)
+		return false, err
+	}
+
+	return true, nil
+}
 
 type ActorRepository interface {
 	save(a ActorBase)
 	get(ActorID) ActorBase
-}
-
-type ActorRepositoryInMem struct {
-	Records map[ActorID]ActorBase
-}
-
-func NewActorRepositoryInMem() ActorRepositoryInMem {
-	return ActorRepositoryInMem{
-		Records: make(map[string]ActorBase),
-	}
-}
-
-func (r *ActorRepositoryInMem) save(a ActorBase) {
-	r.Records[a.ID] = a
-	fmt.Printf("Repo saved: %+v \n", a)
-
-}
-
-func (r *ActorRepositoryInMem) get(id ActorID) ActorBase {
-	return r.Records[id]
 }
 
 type ActorRepositoryDdb struct {
@@ -53,33 +124,19 @@ func NewActorRepositoryDdb(tableName string, sdkConfig aws.Config) ActorReposito
 }
 
 func (r *ActorRepositoryDdb) getKey(id ActorID) map[string]types.AttributeValue {
-	pk, err := attributevalue.Marshal(fmt.Sprintf("actor#%v", id))
+	pk, err := attributevalue.Marshal(id)
 	if err != nil {
 		panic(err)
 	}
-	sk, err := attributevalue.Marshal(fmt.Sprintf("actor#%v", id))
-	if err != nil {
-		panic(err)
-	}
-	return map[string]types.AttributeValue{"pk": pk, "sk": sk}
+	return map[string]types.AttributeValue{"id": pk}
 }
 
-func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}, inbox_count_adjustment int, unlock bool) (*dynamodb.UpdateItemInput, error) {
-	// NOTE: We only allow updating state and inbox_count here.
-	//       Other fields on ActorBase like ID and Type should remain immutable.
+func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]interface{}) (*dynamodb.UpdateItemInput, error) {
 	update := expression.UpdateBuilder{}
 	update = update.Set(expression.Name("state"), expression.Value(state))
-	update = update.Add(expression.Name("inbox_count"), expression.Value(inbox_count_adjustment))
-	if unlock {
-		update = update.Remove(expression.Name("worker_nonce"))
-		update = update.Remove(expression.Name("expires_at"))
-	}
 
 	// This is so we know if the item exists or not. If it doesn't we'll get a ConditionalCheckFailed exception.
-	condition := expression.And(
-		expression.Name("pk").Equal(expression.Value(fmt.Sprintf("actor#%v", id))),
-		expression.Name("sk").Equal(expression.Value(fmt.Sprintf("actor#%v", id))),
-	)
+	condition := expression.Name("id").Equal(expression.Value(id))
 
 	expr, err := expression.
 		NewBuilder().
@@ -91,7 +148,6 @@ func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]int
 		log.Printf("Couldn't build expression for update. Here's why: %v\n", err)
 		return nil, err
 	}
-	// log.Printf("Expression: %+v\n", expr)
 
 	key := r.getKey(id)
 	return &dynamodb.UpdateItemInput{
@@ -105,18 +161,14 @@ func (r *ActorRepositoryDdb) makeUpdateItemInput(id string, state map[string]int
 	}, nil
 }
 
-func (r *ActorRepositoryDdb) save(a ActorBase) (bool, error) {
-	// var err error
-	// var response *dynamodb.UpdateItemOutput
-	// var attributeMap map[string]map[string]interface{}
-	updateItemInput, err := r.makeUpdateItemInput(a.ID, a.State, 0, false)
-	fmt.Printf("UpdateItemInput: %+v\n", updateItemInput)
+func (r *ActorRepositoryDdb) save(id string, state map[string]interface{}) (bool, error) {
+	updateItemInput, err := r.makeUpdateItemInput(id, state)
 	if err != nil {
 		return false, err
 	}
 	_, err = r.DynamoDbClient.UpdateItem(context.TODO(), updateItemInput)
 	if err == nil {
-		log.Printf("DDB Repo saved via update: %+v \n", a)
+		log.Printf("DDB Repo saved via update: %v %v+\n", id, state)
 		return false, nil
 	}
 
@@ -124,7 +176,7 @@ func (r *ActorRepositoryDdb) save(a ActorBase) (bool, error) {
 	// If it's not a CCF, we don't know what to do with it.
 	var ccf *types.ConditionalCheckFailedException
 	if !errors.As(err, &ccf) {
-		log.Printf("Couldn't update actor %v+. Here's why: %v\n", a, err)
+		log.Printf("Couldn't update actor %v+. Here's why: %v\n", id, err)
 		return false, err
 	}
 
@@ -135,17 +187,13 @@ func (r *ActorRepositoryDdb) save(a ActorBase) (bool, error) {
 	// So we put those in directly, not via the ActorBase struct.
 	// TODO: Refactor this so that update and puts both use some common base for figuring out which fields go in from ActorBase to Dynamo
 	//  	 Right now this is duplicated between here and in makeUpdateItemInput.
-	state, err := attributevalue.Marshal(a.State)
+	marshalledState, err := attributevalue.Marshal(state)
 	if err != nil {
 		return false, err
 	}
 	item := make(map[string]types.AttributeValue)
-	item["pk"] = &types.AttributeValueMemberS{Value: "actor#" + a.ID}
-	item["sk"] = &types.AttributeValueMemberS{Value: "actor#" + a.ID}
-	item["inbox_count"] = &types.AttributeValueMemberN{Value: "0"}
-	item["id"] = &types.AttributeValueMemberS{Value: a.ID}
-	item["type"] = &types.AttributeValueMemberS{Value: a.Type}
-	item["state"] = state
+	item["id"] = &types.AttributeValueMemberS{Value: id}
+	item["state"] = marshalledState
 	_, err = r.DynamoDbClient.PutItem(context.TODO(), &dynamodb.PutItemInput{
 		TableName: aws.String(r.TableName),
 		Item:      item,
@@ -178,35 +226,14 @@ func (r *ActorRepositoryDdb) get(id ActorID) (Actor, error) {
 		return nil, err
 	}
 
-	// load all of the actor's messages
-	query := &dynamodb.QueryInput{
-		TableName:              aws.String(r.TableName),
-		KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :sk)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("actor#%v", id)},
-			":sk": &types.AttributeValueMemberS{Value: "message#"},
-		},
-	}
-	messagesResponse, err := r.DynamoDbClient.Query(context.TODO(), query)
-	if err != nil {
-		log.Printf("Couldn't query messages. Here's why: %v\n", err)
-		return nil, err
-	}
-	var messages []Message
-	err = attributevalue.UnmarshalListOfMaps(messagesResponse.Items, &messages)
-	if err != nil {
-		log.Printf("Couldn't unmarshal messages. Here's why: %v\n", err)
-		return nil, err
-	}
-	actorBase.Inbox = messages // TODO: should we be passing messages in via a method on the interface instead of the struct field?
-
 	var actor Actor
-	switch actorBase.Type {
+	actorType := actorBase.State["_type"]
+	switch actorType {
 	case "counting":
 		// TODO: how will we handle versioning of actor types?
 		actor = NewCountingActorFromBase(actorBase)
 	default:
-		return nil, fmt.Errorf("unknown actor type: %v", actorBase.Type)
+		return nil, fmt.Errorf("unknown actor type: %v", actorType)
 	}
 
 	return actor, err
@@ -295,7 +322,7 @@ func (r *ActorRepositoryDdb) finishedWork(actorId ActorID, updatedState map[stri
 		return deleteItems
 	}
 
-	updateItemInput, err := r.makeUpdateItemInput(actorId, updatedState, -len(consumedMessageIds), true)
+	updateItemInput, err := r.makeUpdateItemInput(actorId, updatedState)
 	if err != nil {
 		return false, err
 	}
